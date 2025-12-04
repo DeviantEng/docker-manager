@@ -1,0 +1,102 @@
+# Docker Manager Configuration
+
+# Global Settings
+global:
+  # Host definitions with friendly names
+  hosts:
+    docker01:
+      ip: 172.16.100.200
+      docker_root: /opt/docker
+    docker02:
+      ip: 172.16.100.202
+      docker_root: /opt/docker
+  
+  # Backup settings
+  backup:
+    root: /mnt/media/nfs/docker-backups
+    compression: pigz  # pigz (parallel, faster) or gzip
+    compression_level: 6  # 1-9, higher = more compression
+    default_retention: 4  # Keep last N backups per project
+    default_schedule: daily  # daily, weekly, biweekly, monthly
+    
+    # Global exclusion patterns (applied to all projects unless overridden)
+    default_exclude_patterns:
+      - "*.log"           # Log files
+      - "*.sock"          # Socket files
+      - "*/cache/*"       # Cache directories
+      - "*/Cache/*"       # Cache directories (capitalized)
+      - "*/logs/*"        # Log directories
+      - "*/Logs/*"        # Log directories (capitalized)
+      - "*/tmp/*"         # Temp directories
+      - "*/temp/*"        # Temp directories
+      - "*/.cache/*"      # Hidden cache directories
+      - "*/lost+found/*"  # Linux lost+found directories
+  
+  # Update settings
+  update:
+    default_behavior: backup_then_update  # backup_then_update, backup_only, update_only
+  
+  # Logging
+  log_dir: /var/log/docker-manager
+  log_retention_days: 30
+  
+  # Notifications
+  notifications:
+    enabled: true
+    provider: ntfy
+    ntfy:
+      server: https://ntfy.domain.com
+      topic: homelab-<REDACTED>
+      username: <REDACTED>
+      password: <REDACTED>
+
+# Project-specific overrides (optional)
+# If a project is not listed here, it will use the global defaults
+projects:
+  # Example: Increase retention for important service
+  vaultwarden:
+    retention: 8
+    schedule: daily
+    behavior: backup_then_update
+  
+  # Example: Skip backup entirely (only update)
+  musicbrainz:
+    behavior: update_only
+    schedule: weekly
+  
+  # Example: Backup but exclude certain volumes
+  jellyfin:
+    retention: 6
+    schedule: weekly
+    backup_compose: true  # Default is true, only set to false to exclude
+    exclude_volumes:
+      - cache
+      - transcodes
+    behavior: backup_then_update
+  
+  # Example: Custom exclusion patterns (like Plex with nested cache/logs)
+  plex:
+    retention: 4
+    schedule: weekly
+    exclude_patterns:
+      - "*/Logs/*"                # Plex logs
+      - "*/Cache/*"               # Plex cache
+      - "*/Crash Reports/*"       # Crash reports
+      - "*/Diagnostics/*"         # Diagnostics
+      # Note: Metadata is NOT excluded - decide based on your needs
+    behavior: backup_then_update
+  
+  # Example: Backup only, never auto-update
+  postgres-shared:
+    retention: 10
+    schedule: daily
+    behavior: backup_only
+  
+  # Example: Only backup compose file, no volumes
+  nginx:
+    retention: 4
+    schedule: weekly
+    backup_compose: true
+    exclude_volumes:
+      - ALL  # Special keyword - excludes all volumes
+
