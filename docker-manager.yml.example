@@ -5,10 +5,10 @@ global:
   # Host definitions with friendly names
   hosts:
     docker01:
-      ip: 172.16.100.200
+      ip: 192.168.1.101
       docker_root: /opt/docker
     docker02:
-      ip: 172.16.100.202
+      ip: 192.168.1.102
       docker_root: /opt/docker
   
   # Backup settings

@@ -1,6 +1,379 @@
 # Docker Manager
 
-Centralized Docker backup and update management CLI application.
+Centralized Docker backup and update management CLI application for managing multiple Docker hosts.
+
+**Repository**: https://github.com/DeviantEng/docker-manager
+
+## Features
+
+- ✅ **Automated Backups** - Stop, backup, restart projects safely (preserves container state)
+- ✅ **Flexible Scheduling** - Daily, weekly, biweekly, monthly per project
+- ✅ **Smart Updates** - Automatic updates after backups (configurable)
+- ✅ **Retention Management** - Keep last N backups per project with auto-cleanup
+- ✅ **Selective Backups** - Exclude volumes, patterns, or backup only compose files
+- ✅ **Multi-Host** - Manage multiple Docker hosts from one central machine
+- ✅ **Notifications** - ntfy integration with retry logic for reliable alerts
+- ✅ **SSH-based** - Secure remote execution via SSH keys
+- ✅ **YAML Configuration** - Easy, readable configuration with per-project overrides
+- ✅ **State Preservation** - Containers return to their original state (running/stopped)
+
+## Prerequisites
+
+- Python 3.8+
+- SSH access to Docker hosts (root with SSH keys configured)
+- NFS share mounted on all hosts and admin machine
+- `pigz` installed on Docker hosts (optional, for faster compression)
+
+## Quick Start
+
+```bash
+# Clone repository
+git clone https://github.com/DeviantEng/docker-manager.git /opt/docker-manager
+cd /opt/docker-manager
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure
+cp docker-manager.yml.example docker-manager.yml
+nano docker-manager.yml
+
+# Create log directory
+mkdir -p /var/log/docker-manager
+
+# Test
+./docker-manager.py test-ssh
+./docker-manager.py test-notify
+./docker-manager.py list
+
+# Run first backup
+./docker-manager.py backup --host docker01 your-project
+
+# Setup daily cron
+crontab -e
+# Add: 0 2 * * * /opt/docker-manager/venv/bin/python3 /opt/docker-manager/docker-manager.py run
+```
+
+See [SETUP.md](SETUP.md) for detailed installation instructions.
+
+## Configuration
+
+### Minimal Configuration
+
+```yaml
+global:
+  hosts:
+    docker01:
+      ip: 192.168.1.101
+      docker_root: /opt/docker
+  
+  backup:
+    root: /mnt/nfs/docker-backups
+    default_schedule: weekly
+    default_retention: 4
+  
+  notifications:
+    enabled: true
+    provider: ntfy
+    ntfy:
+      server: https://ntfy.example.com
+      topic: docker-manager
+      username: user
+      password: pass
+```
+
+### Project Overrides
+
+```yaml
+projects:
+  # Critical service - daily backups, keep 14
+  vaultwarden:
+    retention: 14
+    schedule: daily
+  
+  # Skip backup, only update
+  musicbrainz:
+    behavior: update_only
+  
+  # Exclude cache/logs from backup
+  plex:
+    schedule: weekly
+    exclude_patterns:
+      - "*/Logs/*"
+      - "*/Cache/*"
+```
+
+See [docker-manager.yml.example](docker-manager.yml.example) for all options.
+
+## Usage
+
+### Daily Automated Run
+
+```bash
+# Scheduled via cron (respects schedules, performs cleanup)
+./docker-manager.py run
+```
+
+### Manual Operations
+
+```bash
+# Backup operations
+./docker-manager.py backup all                           # All projects
+./docker-manager.py backup --host docker01               # All on one host
+./docker-manager.py backup --host docker01 vaultwarden   # Specific project
+
+# Update operations
+./docker-manager.py update all                           # Check all for updates
+./docker-manager.py update vaultwarden                   # Update specific project
+
+# Combined (backup then update)
+./docker-manager.py run --force                          # Force all, ignore schedules
+./docker-manager.py run --host docker01 vaultwarden      # One project
+
+# Maintenance
+./docker-manager.py cleanup        # Remove old backups per retention
+./docker-manager.py list           # Show all discovered projects
+./docker-manager.py test-ssh       # Test connectivity
+./docker-manager.py test-notify    # Test notifications
+```
+
+## How It Works
+
+### Backup Process
+
+1. Check if backup is due based on schedule
+2. SSH to Docker host
+3. Check container state (running/stopped)
+4. Stop containers (if running)
+5. Create compressed tar backup (excluding configured patterns)
+6. Check for updates (if `backup_then_update`)
+7. Start containers (if they were running)
+8. Clean up old backups per retention policy
+
+### Scheduling
+
+The `schedule` setting controls both backup AND update frequency:
+- `daily` - Backup + update every day
+- `weekly` - Backup + update once per week (if last backup >7 days)
+- `biweekly` - Backup + update every 2 weeks
+- `monthly` - Backup + update once per month
+
+Schedules are checked by parsing timestamps from backup filenames.
+
+### Behavior Modes
+
+- `backup_then_update` - Backup, then check for updates (default)
+- `backup_only` - Backup without checking for updates
+- `update_only` - Check for updates without backing up
+
+### State Preservation
+
+Containers are always returned to their original state:
+- If running before backup → Stopped → Backed up → Updated → Started
+- If stopped before backup → Backed up → Remain stopped (no update check)
+
+## Backup Format
+
+Backups are named: `{hostname}-{project}-{timestamp}.tar.gz`
+
+Examples:
+```
+docker01-vaultwarden-20241204-103000.tar.gz
+docker01-jellyfin-20241204-103005.tar.gz
+docker02-plex-20241204-103010.tar.gz
+```
+
+Each backup contains:
+- docker-compose.yml and related files
+- All volumes (unless excluded)
+- .env files
+- Project directory structure
+
+## Exclusion Patterns
+
+Control what gets backed up:
+
+### Global Defaults
+
+```yaml
+global:
+  backup:
+    default_exclude_patterns:
+      - "*.log"
+      - "*.sock"
+      - "*/cache/*"
+      - "*/logs/*"
+```
+
+### Per-Project Patterns
+
+```yaml
+projects:
+  plex:
+    exclude_patterns:
+      - "*/Logs/*"
+      - "*/Cache/*"
+      - "*/Crash Reports/*"
+```
+
+See [EXCLUSIONS.md](EXCLUSIONS.md) for pattern examples and guidance.
+
+## Notifications
+
+Notifications are sent via ntfy with automatic retry logic.
+
+**Backup Summary:**
+```
+🐳 Docker Manager: 12 backups completed
+
+💾 Backup Complete
+━━━━━━━━━━━━━━━━━━━━
+Projects: 12 (45 containers)
+✅ Successful: 12
+
+Total Size: 5.2GB
+```
+
+**Update Summary:**
+```
+🐳 Docker Manager: 3 updates applied
+
+🔄 Updates Complete
+━━━━━━━━━━━━━━━━━━━━
+Checked: 12 projects
+✅ Updated: 3
+✔️ Up-to-date: 9
+```
+
+## Restoration
+
+To restore a backup:
+
+```bash
+# 1. SSH to host
+ssh root@docker01
+
+# 2. Stop service
+cd /opt/docker/vaultwarden
+docker compose down
+
+# 3. Extract backup
+cd /opt/docker
+tar -xzf /mnt/nfs/docker-backups/docker01-vaultwarden-20241204-103000.tar.gz -C vaultwarden/
+
+# 4. Start service
+cd vaultwarden
+docker compose up -d
+```
+
+## Monitoring
+
+```bash
+# Check logs
+tail -f /var/log/docker-manager/docker-manager-$(date +%Y%m%d).log
+
+# Review last run
+tail -100 /var/log/docker-manager/docker-manager-$(date +%Y%m%d).log
+
+# Check backup sizes
+du -sh /mnt/nfs/docker-backups/*
+
+# List backups per project
+ls -lh /mnt/nfs/docker-backups/ | grep vaultwarden
+```
+
+## Troubleshooting
+
+### Dependencies Not Installed
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### SSH Connection Issues
+
+```bash
+# Test manually
+ssh root@192.168.1.101 "echo OK"
+
+# Check SSH keys
+ls -la ~/.ssh/
+
+# Use built-in test
+./docker-manager.py test-ssh
+```
+
+### Notifications Not Working
+
+```bash
+# Test notification
+./docker-manager.py test-notify
+
+# Check configuration
+grep -A 6 "notifications:" docker-manager.yml
+```
+
+### Backups Not Running
+
+```bash
+# Check schedule (might not be due yet)
+./docker-manager.py run --force
+
+# Check logs
+tail -100 /var/log/docker-manager/docker-manager-$(date +%Y%m%d).log
+```
+
+## Project Structure
+
+```
+/opt/docker-manager/
+├── docker-manager.py           # Main application
+├── docker-manager.yml          # Your configuration (gitignored)
+├── docker-manager.yml.example  # Example configuration
+├── requirements.txt            # Python dependencies
+├── .gitignore                  # Git ignore rules
+├── README.md                   # This file
+├── SETUP.md                    # Detailed setup guide
+├── EXCLUSIONS.md               # Exclusion pattern guide
+└── venv/                       # Virtual environment (gitignored)
+
+/var/log/docker-manager/
+└── docker-manager-YYYYMMDD.log  # Daily logs
+```
+
+## Security Notes
+
+- Protect `docker-manager.yml` with `chmod 600` (contains credentials)
+- Use SSH keys (not passwords) for host access
+- Secure your NFS share with proper permissions
+- Review logs for sensitive information before sharing
+
+## Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## License
+
+MIT
+
+## Support
+
+- **Issues**: https://github.com/DeviantEng/docker-manager/issues
+- **Logs**: Check `/var/log/docker-manager/` for detailed information
+
+## Author
+
+DeviantEng - https://github.com/DeviantEng
 
 ## Features
 
@@ -171,10 +544,10 @@ global:
   # Host definitions
   hosts:
     docker01:
-      ip: 172.16.100.200
+      ip: 192.168.1.101
       docker_root: /opt/docker
     docker02:
-      ip: 172.16.100.202
+      ip: 192.168.1.102
       docker_root: /opt/docker
   
   # Backup settings

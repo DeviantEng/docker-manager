@@ -1,10 +1,18 @@
-# Exclusion Patterns - Feature Summary
+# Exclusion Patterns - Configuration Guide
 
-## What Changed
+Control what gets backed up with flexible exclusion patterns.
 
-✅ **Removed hardcoded exclusions** from docker-manager.py
-✅ **Added configurable patterns** via YAML config
-✅ **Two levels of control**: Global defaults + per-project overrides
+**Repository**: https://github.com/DeviantEng/docker-manager
+
+## Overview
+
+## Overview
+
+Docker Manager supports flexible exclusion patterns at both global and per-project levels. This allows you to skip backing up temporary files, caches, logs, and other non-essential data.
+
+**Two levels of control:**
+- **Global defaults** - Applied to all projects
+- **Per-project overrides** - Merged with global patterns
 
 ## Configuration
 
@@ -117,22 +125,6 @@ du -sh /opt/docker/plex/
 du -sh /opt/docker/plex/ --exclude='*/{Logs,Cache}/*'
 ```
 
-## Migration from Old Config
-
-If you had no config, **no changes needed**. The example config includes sensible defaults.
-
-If you want the old hardcoded behavior:
-
-```yaml
-global:
-  backup:
-    default_exclude_patterns:
-      - "*.log"
-      - "*.sock"
-      - "cache/*"
-      - "tmp/*"
-```
-
 ## Benefits
 
 ✅ **Flexible** - Control exclusions per project
@@ -140,3 +132,9 @@ global:
 ✅ **Configurable** - No code changes needed
 ✅ **Clear** - Explicit in YAML config
 ✅ **Layered** - Global defaults + project overrides
+
+## Support
+
+- **Main Documentation**: [README.md](README.md)
+- **Setup Guide**: [SETUP.md](SETUP.md)
+- **Issues**: https://github.com/DeviantEng/docker-manager/issues
