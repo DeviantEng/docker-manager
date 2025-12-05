@@ -191,10 +191,18 @@ class DockerManager:
         # Parse timestamp from most recent backup
         last_backup = backups[0]
         try:
-            timestamp_str = last_backup.stem.split('-')[-2] + last_backup.stem.split('-')[-1]
+            # Remove .tar.gz extension first, then split
+            # Format: docker01-joplin-20251205-020004.tar.gz
+            filename_no_ext = last_backup.stem  # Removes .gz -> docker01-joplin-20251205-020004.tar
+            if filename_no_ext.endswith('.tar'):
+                filename_no_ext = filename_no_ext[:-4]  # Remove .tar -> docker01-joplin-20251205-020004
+            
+            parts = filename_no_ext.split('-')
+            # Last two parts should be date and time
+            timestamp_str = parts[-2] + parts[-1]  # 20251205 + 020004
             last_backup_date = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
-        except:
-            self.logger.warning(f"Could not parse backup date from {last_backup.name}, assuming backup needed")
+        except Exception as e:
+            self.logger.warning(f"Could not parse backup date from {last_backup.name}: {e}, assuming backup needed")
             return True
         
         now = datetime.now()
@@ -537,7 +545,7 @@ class DockerManager:
             if target_host and host_name != target_host:
                 continue
             
-            self.logger.info(f"\nProcessing {host_name}...")
+            self.logger.info(f"Processing {host_name}...")
             
             for project in projects:
                 project_name = project['name']
@@ -549,7 +557,7 @@ class DockerManager:
                 stats['total_projects'] += 1
                 project_config = self.get_project_config(project_name)
                 
-                self.logger.info(f"\n{project_name}:")
+                self.logger.info(f"  {project_name}:")
                 
                 # Backup (may include update if behavior is backup_then_update)
                 if operation in ['all', 'backup']:
@@ -599,7 +607,7 @@ class DockerManager:
             self.cleanup_backups()
         
         # Summary
-        self.logger.info("\n" + "=" * 50)
+        self.logger.info("=" * 50)
         self.logger.info("Summary")
         self.logger.info("=" * 50)
         self.logger.info(f"Total Projects: {stats['total_projects']}")
