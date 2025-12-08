@@ -615,11 +615,19 @@ class DockerManager:
         self.logger.info(f"Updates: {stats['updates_successful']} successful, {stats['updates_failed']} failed, {stats['updates_skipped']} skipped")
         self.logger.info(f"Total Backup Size: {self.format_bytes(stats['total_backup_size'])}")
         
+        # Wait for services (like ntfy) to be fully ready before sending notifications
+        if self.notifier.enabled:
+            import time
+            self.logger.info("Waiting 10 seconds for services to stabilize before sending notifications...")
+            time.sleep(10)
+        
         # Send notification
         if self.notifier.enabled:
             if operation in ['all', 'backup']:
                 self.notifier.send_backup_summary(stats)
             if operation in ['all', 'update']:
+                import time
+                time.sleep(1)  # Small delay between notifications
                 self.notifier.send_update_summary(stats)
         
         return stats
@@ -672,8 +680,13 @@ class Notifier:
                         auth=(self.ntfy_config['username'], self.ntfy_config['password']),
                         timeout=10  # Add timeout
                     )
+                    if response.status_code != 200:
+                        self.logger.warning(f"Notification HTTP {response.status_code}: {response.text[:200]}")
                     response.raise_for_status()
                     break  # Success, exit retry loop
+                except requests.exceptions.HTTPError as e:
+                    self.logger.error(f"Notification HTTP error: {e}, response: {e.response.text[:200] if e.response else 'N/A'}")
+                    raise  # Don't retry on auth errors
                 except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                     if attempt < max_retries - 1:
                         self.logger.warning(f"Notification attempt {attempt + 1} failed, retrying...")
