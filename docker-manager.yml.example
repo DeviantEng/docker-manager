@@ -10,6 +10,10 @@ global:
     docker02:
       ip: 192.168.1.102
       docker_root: /opt/docker
+      # docker_prune:    # per-host overrides (optional)
+      #   enabled: false
+      #   schedule: daily
+      #   include_volume_prune: false
   
   # Backup settings
   backup:
@@ -36,9 +40,16 @@ global:
   update:
     default_behavior: backup_then_update  # backup_then_update, backup_only, update_only
   
+  # Docker prune (cleanup unused images, containers, etc. on hosts)
+  docker_prune:
+    enabled: true
+    schedule: weekly         # daily, weekly, biweekly, monthly (same logic as backup)
+    include_volume_prune: true
+    # marker_file: /path/to/.last-docker-prune  # optional; default: {backup.root}/.last-docker-prune
+  
   # Logging
   log_dir: /var/log/docker-manager
-  log_retention_days: 30
+  log_retention_days: 30     # Remove log files older than N days
   
   # Notifications
   notifications:

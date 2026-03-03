@@ -94,6 +94,8 @@ Add this line to run daily at 2 AM:
 0 2 * * * /opt/docker-manager/venv/bin/python3 /opt/docker-manager/docker-manager.py run
 ```
 
+**Note:** The daily run handles backups, updates, docker prune (when due per schedule), backup retention cleanup, and log cleanup. No separate cron entries needed.
+
 **Cron schedule examples:**
 ```bash
 # Daily at 2 AM
@@ -158,6 +160,10 @@ global:
   
   update:
     default_behavior: backup_then_update
+  
+  docker_prune:
+    enabled: true
+    schedule: weekly
   
   log_dir: /var/log/docker-manager
   log_retention_days: 30
@@ -259,7 +265,8 @@ ls /mnt/nfs/docker-backups/ | wc -l
 
 - Verify weekly projects backed up once
 - Verify daily projects backed up 7 times
-- Check retention cleanup is working
+- Check retention cleanup is working (backups and logs)
+- Verify docker prune ran on hosts (if weekly schedule due)
 - Review notification history
 
 ## Troubleshooting

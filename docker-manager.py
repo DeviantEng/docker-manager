@@ -5,6 +5,7 @@ Docker Manager - Centralized Docker backup and update management
 
 import sys
 import os
+import json
 import argparse
 import logging
 from pathlib import Path
@@ -168,6 +169,121 @@ class DockerManager:
         config = {**defaults, **project_config}
         
         return config
+    
+    def get_host_prune_config(self, host_name):
+        """Get docker prune config for a host (merges global defaults with host-specific overrides)"""
+        global_prune = self.config.get('global', {}).get('docker_prune', {})
+        defaults = {
+            'enabled': global_prune.get('enabled', True),
+            'schedule': global_prune.get('schedule', 'weekly'),
+            'include_volume_prune': global_prune.get('include_volume_prune', True),
+        }
+        host_config = self.config.get('global', {}).get('hosts', {}).get(host_name, {})
+        host_prune = host_config.get('docker_prune', {})
+        return {**defaults, **host_prune}
+    
+    def _get_prune_marker_path(self):
+        """Get path to prune state marker file. Default: {backup.root}/.last-docker-prune"""
+        global_prune = self.config.get('global', {}).get('docker_prune', {})
+        if global_prune.get('marker_file'):
+            return Path(global_prune['marker_file'])
+        backup_root = Path(self.config['global']['backup']['root'])
+        return backup_root / '.last-docker-prune'
+    
+    def _get_last_prune_timestamp(self, host_name):
+        """Get last prune timestamp for a host from marker file. Returns datetime or None."""
+        marker_path = self._get_prune_marker_path()
+        if not marker_path.exists():
+            return None
+        try:
+            with open(marker_path, 'r') as f:
+                data = json.load(f)
+            ts_str = data.get(host_name)
+            if not ts_str:
+                return None
+            return datetime.strptime(ts_str, '%Y-%m-%dT%H:%M:%S')
+        except (json.JSONDecodeError, ValueError, KeyError):
+            return None
+    
+    def _record_prune_timestamp(self, host_name):
+        """Record prune timestamp for a host in marker file"""
+        marker_path = self._get_prune_marker_path()
+        data = {}
+        if marker_path.exists():
+            try:
+                with open(marker_path, 'r') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        data[host_name] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(marker_path, 'w') as f:
+            json.dump(data, f, indent=2)
+    
+    def should_run_docker_prune(self, host_name, prune_config, force):
+        """Determine if docker prune should run for this host based on schedule (same logic as should_backup)"""
+        if force:
+            return True
+        last_prune = self._get_last_prune_timestamp(host_name)
+        if last_prune is None:
+            return True
+        schedule = prune_config.get('schedule', 'weekly')
+        now = datetime.now()
+        days_since = (now - last_prune).days
+        if schedule == 'daily':
+            return days_since >= 1
+        elif schedule == 'weekly':
+            return days_since >= 7
+        elif schedule == 'biweekly':
+            return days_since >= 14
+        elif schedule == 'monthly':
+            return days_since >= 30
+        else:
+            self.logger.warning(f"Unknown prune schedule '{schedule}', defaulting to weekly")
+            return days_since >= 7
+    
+    def run_docker_prune(self, host_name, prune_config):
+        """Run docker prune commands on a remote host via SSH"""
+        host_config = self.config['global']['hosts'][host_name]
+        ip = host_config['ip']
+        
+        self.logger.info(f"  Running docker prune on {host_name} ({ip})...")
+        
+        commands = [
+            'yes | docker container prune',
+            'yes | docker image prune -a',
+            'yes | docker builder prune -a',
+        ]
+        if prune_config.get('include_volume_prune', True):
+            commands.append('yes | docker volume prune')
+        
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(ip, username='root', timeout=10)
+            
+            total_space = 0
+            for cmd in commands:
+                stdin, stdout, stderr = ssh.exec_command(cmd)
+                output = stdout.read().decode()
+                stderr.read()  # consume stderr
+                # Log output for debugging
+                if output.strip():
+                    for line in output.strip().split('\n'):
+                        if 'Total reclaimed space' in line or 'reclaimed' in line.lower():
+                            self.logger.info(f"    {line.strip()}")
+            
+            ssh.close()
+            self.logger.info(f"    ✓ Docker prune complete on {host_name}")
+            return {'status': 'success', 'host': host_name}
+            
+        except Exception as e:
+            self.logger.error(f"    ✗ Docker prune failed on {host_name}: {str(e)}")
+            try:
+                ssh.close()
+            except:
+                pass
+            return {'status': 'failed', 'host': host_name, 'error': str(e)}
     
     def should_backup(self, host_name, project_name, project_config):
         """Determine if project should be backed up based on schedule"""
@@ -516,11 +632,58 @@ class DockerManager:
         
         return removed_count, freed_space
     
+    def cleanup_logs(self):
+        """Clean up old log files based on log_retention_days"""
+        log_dir = Path(self.config['global'].get('log_dir', DEFAULT_LOG_DIR))
+        retention_days = self.config['global'].get('log_retention_days', 30)
+        
+        if not log_dir.exists():
+            return 0
+        
+        self.logger.info(f"Cleaning up logs older than {retention_days} days...")
+        removed_count = 0
+        cutoff = datetime.now() - relativedelta(days=retention_days)
+        
+        for log_file in log_dir.glob('docker-manager-*.log'):
+            try:
+                # Parse date from filename: docker-manager-20251204.log
+                date_str = log_file.stem.replace('docker-manager-', '')
+                log_date = datetime.strptime(date_str, '%Y%m%d')
+                if log_date < cutoff:
+                    log_file.unlink()
+                    removed_count += 1
+                    self.logger.info(f"  Removed: {log_file.name}")
+            except ValueError:
+                self.logger.warning(f"Could not parse date from {log_file.name}, skipping")
+                continue
+        
+        if removed_count > 0:
+            self.logger.info(f"✓ Log cleanup complete: {removed_count} log(s) removed")
+        else:
+            self.logger.info("✓ No old logs to remove")
+        
+        return removed_count
+    
     def run(self, force=False, target_host=None, target_project=None, operation='all'):
         """Run scheduled backup and update operations"""
         self.logger.info("=" * 50)
         self.logger.info(f"Docker Manager Run Started (force={force})")
         self.logger.info("=" * 50)
+        
+        # Docker prune on hosts (if due per schedule)
+        if operation == 'all':
+            prune_hosts = []
+            for host_name in self.config['global']['hosts']:
+                if target_host and host_name != target_host:
+                    continue
+                prune_config = self.get_host_prune_config(host_name)
+                if prune_config['enabled'] and self.should_run_docker_prune(host_name, prune_config, force):
+                    result = self.run_docker_prune(host_name, prune_config)
+                    if result['status'] == 'success':
+                        self._record_prune_timestamp(host_name)
+                        prune_hosts.append(host_name)
+            if prune_hosts and self.notifier.enabled:
+                self.notifier.send_prune_notification(prune_hosts)
         
         # Discover projects (optionally filter by target_host)
         all_projects = self.discover_projects(target_host=target_host)
@@ -605,6 +768,9 @@ class DockerManager:
         # Cleanup old backups
         if operation in ['all', 'backup']:
             self.cleanup_backups()
+        
+        # Cleanup old logs
+        self.cleanup_logs()
         
         # Summary
         self.logger.info("=" * 50)
@@ -779,6 +945,16 @@ Backups removed: {removed_count}
 Space freed: {freed_space}"""
         
         self.send(title, message, 'low', 'broom,floppy_disk')
+    
+    def send_prune_notification(self, hosts):
+        """Send docker prune completion notification"""
+        title = "🐳 Docker Manager: Docker Prune Complete"
+        host_list = ', '.join(hosts)
+        message = f"""🧹 Docker prune completed
+━━━━━━━━━━━━━━━━━━━━
+Hosts: {host_list}"""
+        
+        self.send(title, message, 'low', 'broom,docker')
 
 
 def main():
@@ -812,7 +988,11 @@ def main():
     update_parser.add_argument('project', nargs='?', help='Target specific project (when using --host)')
     
     # Cleanup command
-    cleanup_parser = subparsers.add_parser('cleanup', help='Clean up old backups')
+    cleanup_parser = subparsers.add_parser('cleanup', help='Clean up old backups and logs')
+    
+    # Docker prune command
+    prune_parser = subparsers.add_parser('docker-prune', help='Run docker prune on hosts (manual, bypasses schedule)')
+    prune_parser.add_argument('--host', help='Target specific host')
     
     # Status command
     status_parser = subparsers.add_parser('status', help='Show backup status')
@@ -851,6 +1031,23 @@ def main():
     
     elif args.command == 'cleanup':
         manager.cleanup_backups()
+        manager.cleanup_logs()
+    
+    elif args.command == 'docker-prune':
+        prune_hosts = []
+        for host_name in manager.config['global']['hosts']:
+            if args.host and host_name != args.host:
+                continue
+            prune_config = manager.get_host_prune_config(host_name)
+            if not prune_config['enabled']:
+                manager.logger.info(f"Skipping {host_name} - docker_prune disabled")
+                continue
+            result = manager.run_docker_prune(host_name, prune_config)
+            if result['status'] == 'success':
+                manager._record_prune_timestamp(host_name)
+                prune_hosts.append(host_name)
+        if prune_hosts and manager.notifier.enabled:
+            manager.notifier.send_prune_notification(prune_hosts)
     
     elif args.command == 'list':
         projects = manager.discover_projects()

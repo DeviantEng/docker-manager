@@ -16,6 +16,8 @@ Centralized Docker backup and update management CLI application for managing mul
 - ✅ **SSH-based** - Secure remote execution via SSH keys
 - ✅ **YAML Configuration** - Easy, readable configuration with per-project overrides
 - ✅ **State Preservation** - Containers return to their original state (running/stopped)
+- ✅ **Docker Prune** - Weekly cleanup of unused images, containers, build cache on hosts
+- ✅ **Log Cleanup** - Automatic removal of old log files (default: 30 days retention)
 
 ## Prerequisites
 
@@ -107,6 +109,21 @@ projects:
       - "*/Cache/*"
 ```
 
+### Docker Prune and Log Cleanup
+
+```yaml
+global:
+  docker_prune:
+    enabled: true
+    schedule: weekly         # daily, weekly, biweekly, monthly
+    include_volume_prune: true
+    # marker_file: /path/to/.last-docker-prune  # optional; default: {backup.root}/.last-docker-prune
+  
+  log_retention_days: 30    # Remove log files older than N days
+```
+
+Per-host overrides: Add `docker_prune` under a host to disable (`enabled: false`), change schedule, or skip volume prune.
+
 See [docker-manager.yml.example](docker-manager.yml.example) for all options.
 
 ## Usage
@@ -135,7 +152,9 @@ See [docker-manager.yml.example](docker-manager.yml.example) for all options.
 ./docker-manager.py run --host docker01 vaultwarden      # One project
 
 # Maintenance
-./docker-manager.py cleanup        # Remove old backups per retention
+./docker-manager.py cleanup        # Remove old backups and logs per retention
+./docker-manager.py docker-prune   # Run docker prune on hosts (manual, bypasses schedule)
+./docker-manager.py docker-prune --host docker01   # Prune specific host only
 ./docker-manager.py list           # Show all discovered projects
 ./docker-manager.py test-ssh       # Test connectivity
 ./docker-manager.py test-notify    # Test notifications
@@ -175,6 +194,20 @@ Schedules are checked by parsing timestamps from backup filenames.
 Containers are always returned to their original state:
 - If running before backup → Stopped → Backed up → Updated → Started
 - If stopped before backup → Backed up → Remain stopped (no update check)
+
+### Docker Prune
+
+When `run` is executed, docker prune runs on each host if due (same schedule logic as backups). It removes:
+- Stopped containers
+- Unused images
+- Build cache
+- Orphaned volumes (if `include_volume_prune: true`)
+
+Schedule is tracked per-host via a marker file (default: `{backup.root}/.last-docker-prune`).
+
+### Log Cleanup
+
+After each run, log files older than `log_retention_days` (default 30) are removed from `log_dir`.
 
 ## Backup Format
 
