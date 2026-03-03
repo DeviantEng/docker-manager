@@ -250,12 +250,12 @@ class DockerManager:
         self.logger.info(f"  Running docker prune on {host_name} ({ip})...")
         
         commands = [
-            'yes | docker container prune',
-            'yes | docker image prune -a',
-            'yes | docker builder prune -a',
+            'docker container prune -f',
+            'docker image prune -a -f',
+            'docker builder prune -a -f',
         ]
         if prune_config.get('include_volume_prune', True):
-            commands.append('yes | docker volume prune')
+            commands.append('docker volume prune -f')
         
         try:
             ssh = paramiko.SSHClient()
